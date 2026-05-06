@@ -1,0 +1,22 @@
+{
+  "name": "lety-build",
+  "version": "1.0.0",
+  "description": "Lety cloud compile backend for Pisces Moon OS",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev":   "node --watch server.js"
+  },
+  "license": "AGPL-3.0-or-later",
+  "author": "Eric Becker / Fluid Fortune",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "cors":    "^2.8.5",
+    "helmet":  "^8.0.0",
+    "rate-limiter-flexible": "^5.0.4"
+  }
+}

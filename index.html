@@ -27,6 +27,8 @@ fluidfortune.com
     <button id="btn-template"class="btn">Templates</button>
     <button id="btn-run"     class="btn primary">▶ Run Preview</button>
     <button id="btn-stop"    class="btn" style="display:none">■ Stop</button>
+    <button id="btn-build"   class="btn moonshot">⚡ Build &amp; Flash</button>
+    <button id="btn-bridge"  class="btn moonshot">📡 Connect Bridge</button>
     <button id="btn-export"  class="btn">⤓ Export .cpp</button>
     <button id="btn-help"    class="btn">?</button>
   </nav>
@@ -136,6 +138,13 @@ fluidfortune.com
       <li>Custom libraries</li>
     </ul>
 
+    <h3>Build &amp; Flash to Hardware</h3>
+    <p>The <strong>⚡ Build &amp; Flash</strong> button is the moonshot — it
+    sends your source to the cloud build service, returns a compiled
+    <code>.bin</code>, and flashes it directly to your T-Deck via Web Serial.</p>
+    <p><strong>Requires:</strong> Chrome, Edge, or Opera on desktop.
+    T-Deck connected via USB-C. No PlatformIO install needed on your machine.</p>
+
     <h3>Export</h3>
     <p>The Export button generates the final <code>.cpp</code> with proper
     AGPL header, plus a sidecar <code>integration.txt</code> with exact
@@ -162,11 +171,128 @@ fluidfortune.com
   </div>
 </div>
 
+<!-- ─────────────────────── BUILD & FLASH MODAL ─────────────────── -->
+<div id="modal-build" class="modal" style="display:none">
+  <div class="modal-content build-modal-content">
+    <div class="build-header">
+      <span class="moonshot-icon">⚡</span>
+      <h2 id="build-title">Build &amp; Flash to T-Deck</h2>
+    </div>
+
+    <div id="build-stages" class="build-stages">
+      <div class="build-stage" id="stage-compile">
+        <span class="stage-icon">○</span>
+        <div class="stage-text">
+          <div class="stage-title">Compile</div>
+          <div class="stage-detail">Cloud build via PlatformIO</div>
+        </div>
+      </div>
+      <div class="build-stage" id="stage-connect">
+        <span class="stage-icon">○</span>
+        <div class="stage-text">
+          <div class="stage-title">Connect</div>
+          <div class="stage-detail">Web Serial to T-Deck</div>
+        </div>
+      </div>
+      <div class="build-stage" id="stage-flash">
+        <span class="stage-icon">○</span>
+        <div class="stage-text">
+          <div class="stage-title">Flash</div>
+          <div class="stage-detail">Write firmware via esptool-js</div>
+        </div>
+      </div>
+      <div class="build-stage" id="stage-done">
+        <span class="stage-icon">○</span>
+        <div class="stage-text">
+          <div class="stage-title">Run</div>
+          <div class="stage-detail">Reset device, app launches</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="progress-bar-wrap">
+      <div class="progress-bar"><div class="progress-fill" id="build-progress"></div></div>
+      <div class="progress-msg" id="build-msg">Ready</div>
+    </div>
+
+    <div class="build-console" id="build-console"></div>
+
+    <div class="build-actions">
+      <button class="btn" id="btn-build-cancel">Close</button>
+      <button class="btn primary" id="btn-build-start">Start Build &amp; Flash</button>
+    </div>
+
+    <p class="build-note">
+      <strong>Requires:</strong> Chrome, Edge, or Opera on desktop (Web Serial).
+      T-Deck Plus connected via USB-C.
+    </p>
+  </div>
+</div>
+
+<!-- ─────────────────────── BRIDGE PANEL MODAL ─────────────────── -->
+<div class="modal" id="modal-bridge" style="display:none">
+  <div class="modal-content build-modal" style="max-width:900px">
+    <h2>📡 Pisces Bridge Host</h2>
+    <p class="build-subtitle" id="bridge-subtitle">
+      Stream live WiFi, BLE, LoRa, and GPS detections from any Pisces Bridge device.
+    </p>
+
+    <div class="bridge-status" id="bridge-status" style="margin:16px 0;padding:12px;background:#0a0e14;border:1px solid #1f2937;border-radius:6px">
+      <div id="bridge-status-text" style="color:#6b7280;font-family:monospace;font-size:13px">
+        Not connected. Click "Connect" to select a device.
+      </div>
+      <div id="bridge-capabilities" style="margin-top:8px;display:none">
+        <span style="color:#6b7280;font-size:12px">Capabilities:</span>
+        <span id="bridge-caps-list" style="color:#00ff88;font-family:monospace;font-size:12px;margin-left:8px"></span>
+      </div>
+    </div>
+
+    <div class="bridge-controls" id="bridge-controls" style="display:none;margin:16px 0">
+      <button class="btn" id="bridge-btn-wd-start">Start Wardrive</button>
+      <button class="btn" id="bridge-btn-wd-stop">Stop Wardrive</button>
+      <button class="btn" id="bridge-btn-wifi" data-cap="wifi_scan">WiFi Scan</button>
+      <button class="btn" id="bridge-btn-gps" data-cap="gps">Get GPS</button>
+      <button class="btn" id="bridge-btn-lora-rx" data-cap="lora_rx">LoRa RX On</button>
+      <button class="btn" id="bridge-btn-lora-rx-stop" data-cap="lora_rx">LoRa RX Off</button>
+      <button class="btn" id="bridge-btn-status">Status</button>
+    </div>
+
+    <!-- Live counters -->
+    <div id="bridge-stats" style="display:none;margin:12px 0;padding:10px;background:#0a0e14;border:1px solid #1f2937;border-radius:6px;font-family:monospace;font-size:12px;color:#6b7280">
+      <span>WiFi: <span id="bridge-stat-wifi" style="color:#00ff88">0</span></span>
+      &nbsp;&nbsp;
+      <span>BLE: <span id="bridge-stat-ble" style="color:#00d4ff">0</span></span>
+      &nbsp;&nbsp;
+      <span>LoRa RX: <span id="bridge-stat-lora" style="color:#ff00ff">0</span></span>
+      &nbsp;&nbsp;
+      <span>Events: <span id="bridge-stat-events" style="color:#fff">0</span></span>
+    </div>
+
+    <!-- Live event stream -->
+    <div class="build-console" id="bridge-console" style="height:280px"></div>
+
+    <div class="build-actions">
+      <button class="btn" id="bridge-btn-close">Close</button>
+      <button class="btn" id="bridge-btn-disconnect" style="display:none">Disconnect</button>
+      <button class="btn primary" id="bridge-btn-connect">Connect</button>
+    </div>
+
+    <p class="build-note">
+      <strong>Requires:</strong> Chrome, Edge, or Opera on desktop (Web Serial).
+      A Pisces Bridge device connected via USB.
+      <a href="https://github.com/FluidFortune/pisces-bridge" target="_blank" style="color:#00ff88">Get firmware →</a>
+    </p>
+  </div>
+</div>
+
 <!-- Monaco editor loader -->
 <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
 <script src="api.js"></script>
 <script src="templates.js"></script>
 <script src="emulator.js"></script>
+<script src="build.js"></script>
+<script src="bridge_host.js"></script>
+<script src="bridge_ui.js"></script>
 <script src="ide.js"></script>
 
 </body>

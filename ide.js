@@ -4,6 +4,7 @@
 
 let editor       = null;
 let emulator     = null;
+let builder      = null;
 let currentType  = "builtin";
 let currentFile  = "my_app.cpp";
 let currentFunc  = "run_my_app";
@@ -234,15 +235,29 @@ function downloadFile(name, content) {
 // ─────────────────────────────────────────────
 //  RUN PREVIEW
 // ─────────────────────────────────────────────
+function detectEntryFunction(src) {
+  // Priority 1: ELF entry
+  if (/extern\s+"C"\s+int\s+elf_main\s*\(/.test(src)) {
+    return "elf_main";
+  }
+  // Priority 2: any void run_*() function
+  const m = src.match(/\bvoid\s+(run_\w+)\s*\(\s*\)\s*\{/);
+  if (m) return m[1];
+  // Priority 3: fall back to currentFunc
+  return currentFunc;
+}
+
 function runPreview() {
   if (!editor || !emulator) return;
   const src = editor.getValue();
 
-  // For ELF modules, the function is elf_main
-  const funcName = currentType === "elf" ? "elf_main" : currentFunc;
+  // Auto-detect entry function — handles pasted code where the user's
+  // function is named differently than the active template.
+  const funcName = detectEntryFunction(src);
 
-  setStatus("Transpiling and starting preview...", "info");
+  setStatus(`Transpiling ${funcName}() and starting preview...`, "info");
   logConsole("---- RUN ----", "info");
+  logConsole(`Entry: ${funcName}()`, "info");
 
   const ok = emulator.run(src, funcName);
   if (ok) {
@@ -262,6 +277,98 @@ function stopPreview() {
 }
 
 // ─────────────────────────────────────────────
+//  BUILD & FLASH (THE MOONSHOT)
+// ─────────────────────────────────────────────
+function logBuild(msg, type = "") {
+  const c = document.getElementById("build-console");
+  const line = document.createElement("div");
+  line.className = type;
+  line.textContent = msg;
+  c.appendChild(line);
+  c.scrollTop = c.scrollHeight;
+}
+
+function setBuildStage(name, state) {
+  const el = document.getElementById("stage-" + name);
+  if (!el) return;
+  el.classList.remove("active", "done", "error");
+  if (state) el.classList.add(state);
+}
+
+function setBuildProgress(pct, msg) {
+  document.getElementById("build-progress").style.width = pct + "%";
+  if (msg) document.getElementById("build-msg").textContent = msg;
+}
+
+function openBuildModal() {
+  // Reset state
+  ["compile", "connect", "flash", "done"].forEach(s => setBuildStage(s, ""));
+  setBuildProgress(0, "Ready to build");
+  document.getElementById("build-console").innerHTML = "";
+  document.getElementById("btn-build-start").disabled = false;
+  document.getElementById("btn-build-start").textContent = "Start Build & Flash";
+  document.getElementById("modal-build").style.display = "flex";
+}
+
+async function startBuildAndFlash() {
+  if (!editor || !builder) return;
+  const src = editor.getValue();
+  const funcName = detectEntryFunction(src);
+  const appName  = funcName.replace(/^run_/, "") || "my_app";
+
+  document.getElementById("btn-build-start").disabled = true;
+  document.getElementById("btn-build-start").textContent = "Building…";
+
+  // ── COMPILE STAGE ──
+  setBuildStage("compile", "active");
+  setBuildProgress(10, "Submitting source to compile server…");
+  logBuild("→ Compile stage", "info");
+
+  let buildResult;
+  try {
+    buildResult = await builder.build(src, currentType, appName);
+    setBuildStage("compile", "done");
+    setBuildProgress(50, `Compiled (${buildResult.size} bytes)`);
+    logBuild(`✓ Binary received: ${buildResult.size} bytes`, "info");
+  } catch (err) {
+    setBuildStage("compile", "error");
+    logBuild(`✗ ${err.message}`, "err");
+    document.getElementById("btn-build-start").disabled = false;
+    document.getElementById("btn-build-start").textContent = "Retry";
+    return;
+  }
+
+  // ── CONNECT STAGE ──
+  setBuildStage("connect", "active");
+  setBuildProgress(55, "Requesting USB serial port…");
+  logBuild("→ Connect stage — select your T-Deck in the browser dialog", "info");
+
+  // ── FLASH STAGE handled inside builder.flash ──
+  try {
+    await builder.flash(buildResult);
+    setBuildStage("connect", "done");
+    setBuildStage("flash",   "done");
+    setBuildStage("done",    "done");
+    setBuildProgress(100, "Flashed and running ✓");
+    logBuild("✓ Your app is running on the T-Deck", "info");
+
+    document.getElementById("btn-build-start").textContent = "Build Again";
+    document.getElementById("btn-build-start").disabled = false;
+  } catch (err) {
+    // Distinguish between connect failure and flash failure
+    if (err.message.includes("Port") || err.message.includes("cancelled")) {
+      setBuildStage("connect", "error");
+    } else {
+      setBuildStage("connect", "done");
+      setBuildStage("flash",   "error");
+    }
+    logBuild(`✗ ${err.message}`, "err");
+    document.getElementById("btn-build-start").disabled = false;
+    document.getElementById("btn-build-start").textContent = "Retry";
+  }
+}
+
+// ─────────────────────────────────────────────
 //  INITIALIZATION
 // ─────────────────────────────────────────────
 function init() {
@@ -271,6 +378,12 @@ function init() {
   emulator.fpsHook = (fps) => {
     document.getElementById("hw-fps").textContent = fps;
   };
+
+  // Initialize cloud builder
+  builder = new LetyBuilder();
+  builder.statusHook   = (state, msg) => setBuildProgress(undefined, msg);
+  builder.progressHook = (pct) => setBuildProgress(pct);
+  builder.consoleLog   = logBuild;
 
   // Initialize Monaco
   require.config({ paths: { vs: "https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs" } });
@@ -364,6 +477,10 @@ function init() {
   document.getElementById("btn-run").onclick     = runPreview;
   document.getElementById("btn-stop").onclick    = stopPreview;
   document.getElementById("btn-export").onclick  = exportCpp;
+  document.getElementById("btn-build").onclick   = openBuildModal;
+  document.getElementById("btn-build-start").onclick = startBuildAndFlash;
+  document.getElementById("btn-build-cancel").onclick = () =>
+    document.getElementById("modal-build").style.display = "none";
   document.getElementById("btn-help").onclick    = () =>
     document.getElementById("modal-help").style.display = "flex";
   document.getElementById("btn-template").onclick = () =>
