@@ -1,5 +1,7 @@
 # Lety — Pisces Moon IDE
 
+> *Dedicated to Lety: An absolute force of nature.*
+
 Browser-based development for Pisces Moon OS.  
 **Write code → click ⚡ Build & Flash → app runs on your T-Deck.**
 
