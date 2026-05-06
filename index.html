@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<!--
+Pisces Moon OS — In-Browser IDE
+Copyright (C) 2026 Eric Becker / Fluid Fortune
+SPDX-License-Identifier: AGPL-3.0-or-later
+fluidfortune.com
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lety — Pisces Moon IDE</title>
+<link rel="stylesheet" href="ide.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/editor/editor.main.css">
+</head>
+<body>
+
+<!-- ─────────────────────── HEADER ─────────────────────── -->
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">◐</span>
+    <h1>Lety <span class="dim">— Pisces Moon IDE</span></h1>
+    <span class="version">v1.0.1 · web</span>
+  </div>
+  <nav class="topbar-actions">
+    <button id="btn-new"     class="btn">New</button>
+    <button id="btn-template"class="btn">Templates</button>
+    <button id="btn-run"     class="btn primary">▶ Run Preview</button>
+    <button id="btn-stop"    class="btn" style="display:none">■ Stop</button>
+    <button id="btn-export"  class="btn">⤓ Export .cpp</button>
+    <button id="btn-help"    class="btn">?</button>
+  </nav>
+</header>
+
+<!-- ─────────────────────── MAIN LAYOUT ─────────────────── -->
+<main class="workspace">
+
+  <!-- LEFT: file tree + templates -->
+  <aside class="sidebar left">
+    <div class="panel-title">App Type</div>
+    <div class="app-type-toggle">
+      <button class="seg active" data-type="builtin">Built-in</button>
+      <button class="seg" data-type="elf">ELF Module</button>
+    </div>
+
+    <div class="panel-title">Files</div>
+    <ul id="file-list" class="file-list">
+      <li class="file-item active" data-file="my_app.cpp">
+        <span class="file-icon">📄</span>my_app.cpp
+      </li>
+    </ul>
+
+    <div class="panel-title">API Reference</div>
+    <div class="api-search">
+      <input type="text" id="api-filter" placeholder="Search API…">
+    </div>
+    <div id="api-tree" class="api-tree"></div>
+  </aside>
+
+  <!-- CENTER: editor -->
+  <section class="editor-pane">
+    <div class="editor-tabs">
+      <div class="tab active" data-file="my_app.cpp">my_app.cpp</div>
+    </div>
+    <div id="editor"></div>
+    <div class="status-bar">
+      <span id="status-msg">Ready</span>
+      <span class="status-spacer"></span>
+      <span id="status-line">Line 1, Col 1</span>
+    </div>
+  </section>
+
+  <!-- RIGHT: live preview -->
+  <aside class="sidebar right">
+    <div class="panel-title">Live Preview</div>
+    <div class="device-frame">
+      <div class="device-bezel">
+        <canvas id="preview-canvas" width="320" height="240"></canvas>
+        <div class="device-controls">
+          <span class="key-hint">Mouse = Touch · Arrows = Trackball · Enter = Click · Type = Keyboard</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel-title">Console</div>
+    <div id="console" class="console"></div>
+
+    <div class="panel-title">Hardware</div>
+    <div class="hw-stats">
+      <div class="hw-stat"><span>Free PSRAM</span><b id="hw-psram">8.0 MB</b></div>
+      <div class="hw-stat"><span>Stack</span><b id="hw-stack">8.0 KB</b></div>
+      <div class="hw-stat"><span>FPS</span><b id="hw-fps">--</b></div>
+    </div>
+  </aside>
+
+</main>
+
+<!-- ─────────────────────── HELP MODAL ─────────────────── -->
+<div id="modal-help" class="modal" style="display:none">
+  <div class="modal-content">
+    <h2>How This Works</h2>
+    <p>Pisces Moon IDE is a live development environment for the
+    Pisces Moon OS running on the LilyGO T-Deck Plus and (theoretically)
+    the KodeDot.</p>
+
+    <h3>Two Modes</h3>
+    <ul>
+      <li><b>Built-in App</b> — A <code>.cpp</code> file that compiles into the
+        OS. Wired into <code>apps.h</code> and <code>launcher.cpp</code> on export.</li>
+      <li><b>ELF Module</b> — A standalone module loaded from the SD card at
+        runtime. Compiled separately, drops into <code>./sd/apps/</code>.</li>
+    </ul>
+
+    <h3>Live Preview</h3>
+    <p>Your code runs in a JavaScript interpreter that emulates the Pisces Moon
+    HAL exactly. The same source compiles for real hardware via PlatformIO.</p>
+
+    <p><b>Supported in preview:</b></p>
+    <ul>
+      <li>Display: <code>gfx-&gt;fillScreen</code>, <code>fillRect</code>, <code>drawRect</code>,
+        <code>drawLine</code>, <code>drawCircle</code>, <code>fillCircle</code>,
+        <code>setCursor</code>, <code>setTextColor</code>, <code>setTextSize</code>,
+        <code>print</code>, <code>println</code>, <code>printf</code>.</li>
+      <li>Touch: <code>get_touch(&amp;tx, &amp;ty)</code>.</li>
+      <li>Trackball: <code>update_trackball()</code>, <code>update_trackball_game()</code>.</li>
+      <li>Keyboard: <code>get_keypress()</code>.</li>
+      <li>Timing: <code>delay(ms)</code>, <code>millis()</code>, <code>yield()</code>.</li>
+      <li>Theme: all <code>C_*</code> color constants.</li>
+    </ul>
+
+    <p><b>Not in preview, but compiles for hardware:</b></p>
+    <ul>
+      <li>WiFi, BLE, LoRa, GPS</li>
+      <li>SD card I/O</li>
+      <li>Audio</li>
+      <li>Custom libraries</li>
+    </ul>
+
+    <h3>Export</h3>
+    <p>The Export button generates the final <code>.cpp</code> with proper
+    AGPL header, plus a sidecar <code>integration.txt</code> with exact
+    instructions for adding to <code>apps.h</code> and <code>launcher.cpp</code>.</p>
+
+    <h3>Controls in Preview</h3>
+    <table>
+      <tr><td>Mouse click/drag</td><td>Touch screen</td></tr>
+      <tr><td>Arrow keys</td><td>Trackball</td></tr>
+      <tr><td>Right-Alt + Enter</td><td>Trackball click</td></tr>
+      <tr><td>Type any other key</td><td>T-Deck keyboard</td></tr>
+    </table>
+
+    <button class="btn primary" onclick="document.getElementById('modal-help').style.display='none'">Got it</button>
+  </div>
+</div>
+
+<!-- ─────────────────────── TEMPLATE MODAL ─────────────────── -->
+<div id="modal-template" class="modal" style="display:none">
+  <div class="modal-content">
+    <h2>Choose a Template</h2>
+    <div class="template-grid" id="template-grid"></div>
+    <button class="btn" onclick="document.getElementById('modal-template').style.display='none'">Cancel</button>
+  </div>
+</div>
+
+<!-- Monaco editor loader -->
+<script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+<script src="api.js"></script>
+<script src="templates.js"></script>
+<script src="emulator.js"></script>
+<script src="ide.js"></script>
+
+</body>
+</html>
