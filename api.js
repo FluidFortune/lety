@@ -160,6 +160,19 @@ const PISCES_API = {
     { name: "// Same code",                     desc: "Compiles unchanged for both devices" },
   ],
 
+  "Probe Intel — RF Intel App": [
+    { name: "run_probe_intel()",               desc: "Entry point — mode select screen on launch, returns on exit" },
+    { name: "// SCAN MODE",                    desc: "Active WiFi scans, GPS-tagged CSV log to SD, no host needed" },
+    { name: "// PROMISCUOUS MODE",             desc: "Passive 802.11 monitor, live frame counters, optional host stream" },
+    { name: "wardrive_set_mode(MODE_PROMISC)", desc: "Switch Ghost Engine to 802.11 monitor mode" },
+    { name: "wardrive_set_mode(MODE_SCAN)",    desc: "Switch Ghost Engine back to active scan" },
+    { name: "pm_promiscuous_get_stats(&s)",    desc: "Fill pm_stats_t: beacon/probe/deauth/other/fps/captured/dropped" },
+    { name: "pm_promiscuous_channel()",        desc: "Current 802.11 channel being monitored (1-13)" },
+    { name: "wardrive_bridge_streaming",       desc: "extern bool — true when Bridge host is streaming JSON to host" },
+    { name: "// [M] key",                      desc: "Switches modes mid-session without restarting app" },
+    { name: "// Edge detection",               desc: "Header shows [EDGE] when streaming, [LOCAL] when display-only" },
+  ],
+
   "WiFi Scanning (CYBER)": [
     { name: "WiFi.mode(WIFI_STA)",              desc: "Set station mode for scanning" },
     { name: "WiFi.disconnect()",                desc: "Detach before scan" },

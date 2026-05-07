@@ -1419,42 +1419,178 @@ void run_my_sysinfo() {
 
   // ─────────────────────────────────────────────
   builtin_kodedot_app: {
-    name: "KodeDot: D-pad App",
-    desc: "Same code works on T-Deck and KodeDot via input abstraction",
+    name: "KodeDot: Dual-Hardware BLE Scanner",
+    desc: "D-pad navigation, resolution-aware layout — runs on T-Deck and KodeDot unchanged",
     type: "builtin",
-    funcName: "run_kodedot_demo",
-    code: `// Pisces Moon OS — D-pad App (KodeDot + T-Deck)
+    funcName: "run_kodedot_ble_scan",
+    code: `// Pisces Moon OS — Dual-Hardware BLE Scanner
 // Copyright (C) 2026 Your Name
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
 // fluidfortune.com
 //
-// Uses the input abstraction layer so the same source compiles for:
-//   - LilyGO T-Deck Plus (trackball maps to dpad)
-//   - KodeDot          (native d-pad)
+// ╔══════════════════════════════════════════════════════╗
+//  DUAL-HARDWARE PORTABILITY PATTERN
 //
-// On KodeDot, get_dpad() reads the physical d-pad.
-// On T-Deck, get_dpad() returns the trackball state in the same format.
-// Both hardware paths produce {x, y, clicked} the app code can use directly.
+//  This file compiles unchanged for:
+//    LilyGO T-Deck Plus   320×240  trackball + QWERTY
+//    KodeDot              480×480  native d-pad
+//
+//  Input:      get_dpad()   →  DpadState {x, y, clicked}
+//              Trackball deltas map to ±1 x/y on T-Deck.
+//              Native d-pad buttons map to ±1 x/y on KodeDot.
+//
+//  Resolution: SCREEN_W / SCREEN_H resolve at compile time.
+//              T-Deck:  SCREEN_W=320, SCREEN_H=240
+//              KodeDot: SCREEN_W=480, SCREEN_H=480
+//              Use these instead of hardcoded 320/240.
+//
+//  Text size:  At 1× each character is 6×8 px.
+//              On KodeDot the extra real estate lets you go
+//              larger — SCREEN_W > 400 is a good threshold.
+// ╔══════════════════════════════════════════════════════╝
 
 #include <Arduino.h>
 #include <Arduino_GFX_Library.h>
+#include <BLEDevice.h>
+#include <BLEScan.h>
 #include "touch.h"
-#include "dpad.h"      // Abstraction over trackball / native d-pad
+#include "dpad.h"        // Unified input: trackball (T-Deck) or d-pad (KodeDot)
+#include "keyboard.h"
 #include "theme.h"
 
 extern Arduino_GFX* gfx;
 
-void run_kodedot_demo() {
-    int cursor_x = 160, cursor_y = 120;
+// ─────────────────────────────────────────────
+//  Resolution-aware layout constants
+//  Everything positions relative to these so the
+//  same layout works on 320×240 and 480×480.
+// ─────────────────────────────────────────────
+#define HEADER_H      24
+#define FOOTER_H      25
+#define ROW_H         18
+#define COL1_X        10
+#define COL2_X        (SCREEN_W / 2)
+#define BODY_TOP      (HEADER_H + 4)
+#define BODY_BOT      (SCREEN_H - FOOTER_H - 2)
+#define MAX_ROWS      ((BODY_BOT - BODY_TOP) / ROW_H)
+#define RSSI_COL      (SCREEN_W - 55)
+
+// ─────────────────────────────────────────────
+struct BleEntry {
+    char mac[20];
+    char name[40];
+    int  rssi;
+};
+
+static BleEntry entries[32];
+static int      entry_count = 0;
+static int      cursor = 0;
+static int      scroll_top = 0;
+
+static void draw_header() {
+    gfx->fillRect(0, 0, SCREEN_W, HEADER_H, C_DARK);
+    gfx->drawFastHLine(0, HEADER_H, SCREEN_W, C_CYAN);
+    gfx->setCursor(COL1_X, 7);
+    gfx->setTextColor(C_CYAN);
+    gfx->setTextSize(1);
+    gfx->print("BLE SCANNER | TAP HEADER TO EXIT");
+}
+
+static void draw_footer(bool scanning) {
+    gfx->fillRect(0, SCREEN_H - FOOTER_H, SCREEN_W, FOOTER_H, C_DARK);
+    gfx->setCursor(COL1_X, SCREEN_H - FOOTER_H + 8);
+    gfx->setTextColor(C_GREEN);
+    if (scanning) {
+        gfx->print("Scanning 5s...");
+    } else {
+        gfx->printf("[S] Scan  [Q] Quit  Found: %d", entry_count);
+    }
+}
+
+static void draw_list() {
+    gfx->fillRect(0, BODY_TOP, SCREEN_W, BODY_BOT - BODY_TOP, C_BLACK);
+    int visible = min(entry_count - scroll_top, MAX_ROWS);
+    for (int i = 0; i < visible; i++) {
+        int idx = scroll_top + i;
+        int y   = BODY_TOP + i * ROW_H;
+        bool sel = (idx == cursor);
+
+        if (sel) {
+            gfx->fillRect(0, y - 1, SCREEN_W, ROW_H - 1, C_DARK);
+            gfx->setTextColor(C_CYAN);
+        } else {
+            gfx->setTextColor(C_WHITE);
+        }
+
+        gfx->setCursor(COL1_X, y);
+        // Truncate name to fit — more space on KodeDot
+        int max_name = (SCREEN_W > 400) ? 30 : 18;
+        char n[40];
+        strncpy(n, entries[idx].name, sizeof(n) - 1);
+        n[max_name] = 0;
+        if (strlen(entries[idx].name) > (size_t)max_name) {
+            n[max_name - 3] = '.'; n[max_name - 2] = '.'; n[max_name - 1] = '.';
+        }
+        gfx->print(n[0] ? n : "(unnamed)");
+
+        // RSSI column flush right
+        gfx->setTextColor(entries[idx].rssi > -60 ? C_GREEN :
+                          entries[idx].rssi > -80 ? C_YELLOW : C_RED);
+        gfx->setCursor(RSSI_COL, y);
+        gfx->printf("%d", entries[idx].rssi);
+    }
+
+    if (entry_count == 0) {
+        gfx->setTextColor(C_GREY);
+        gfx->setCursor(COL1_X, BODY_TOP + 20);
+        gfx->print("Press [S] to scan for BLE devices.");
+    }
+}
+
+static void do_scan() {
+    draw_footer(true);
+
+    BLEDevice::init("");
+    BLEScan* scan = BLEDevice::getScan();
+    scan->setActiveScan(true);
+    scan->setInterval(100);
+    scan->setWindow(99);
+    BLEScanResults* results = scan->start(5, false);   // 5 second scan
+
+    for (int i = 0; i < results->getCount() && entry_count < 32; i++) {
+        BLEAdvertisedDevice dev = results->getDevice(i);
+        bool found = false;
+        for (int j = 0; j < entry_count; j++) {
+            if (strcmp(entries[j].mac, dev.getAddress().toString().c_str()) == 0) {
+                entries[j].rssi = dev.getRSSI();
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            strncpy(entries[entry_count].mac,  dev.getAddress().toString().c_str(), 19);
+            strncpy(entries[entry_count].name,
+                    dev.haveName() ? dev.getName().c_str() : "", 39);
+            entries[entry_count].rssi = dev.getRSSI();
+            entry_count++;
+        }
+    }
+    scan->clearResults();
+
+    draw_list();
+    draw_footer(false);
+}
+
+void run_kodedot_ble_scan() {
+    entry_count = 0;
+    cursor = 0;
+    scroll_top = 0;
 
     gfx->fillScreen(C_BLACK);
-    gfx->fillRect(0, 0, 320, 24, C_DARK);
-    gfx->drawFastHLine(0, 24, 320, C_GREEN);
-    gfx->setCursor(10, 7);
-    gfx->setTextColor(C_GREEN);
-    gfx->setTextSize(1);
-    gfx->print("D-PAD DEMO | TAP HEADER TO EXIT");
+    draw_header();
+    draw_footer(false);
+    draw_list();
 
     while (true) {
         int16_t tx, ty;
@@ -1463,18 +1599,20 @@ void run_kodedot_demo() {
             return;
         }
 
-        DpadState d = get_dpad();
-        if (d.x != 0 || d.y != 0) {
-            // Erase old position
-            gfx->fillCircle(cursor_x, cursor_y, 8, C_BLACK);
-            cursor_x = max(8, min(312, cursor_x + d.x * 8));
-            cursor_y = max(32, min(232, cursor_y + d.y * 8));
-        }
+        char k = get_keypress();
+        if (k == 'q' || k == 'Q') return;
+        if (k == 's' || k == 'S') { do_scan(); continue; }
 
-        if (d.clicked) {
-            gfx->fillCircle(cursor_x, cursor_y, 12, C_YELLOW);
-        } else {
-            gfx->fillCircle(cursor_x, cursor_y, 8, C_CYAN);
+        DpadState d = get_dpad();
+        if (d.y == -1 && cursor > 0) {
+            cursor--;
+            if (cursor < scroll_top) scroll_top = cursor;
+            draw_list();
+        }
+        if (d.y ==  1 && cursor < entry_count - 1) {
+            cursor++;
+            if (cursor >= scroll_top + MAX_ROWS) scroll_top = cursor - MAX_ROWS + 1;
+            draw_list();
         }
 
         delay(30);
@@ -1640,5 +1778,516 @@ void run_my_wardriver() {
 }
 `
   },
+
+  // ─────────────────────────────────────────────
+  builtin_ble_scanner: {
+    name: "CYBER: BLE Scanner",
+    desc: "Scan for BLE advertisers, show name/MAC/RSSI list",
+    type: "builtin",
+    funcName: "run_my_ble_scanner",
+    code: `// Pisces Moon OS — BLE Scanner
+// Copyright (C) 2026 Your Name
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// fluidfortune.com
+//
+// Passive BLE scanner — discovers advertising devices (beacons,
+// phones, wearables) without connecting to them.
+// Sorted by RSSI so strongest signals appear first.
+//
+// Note: BLE and WiFi share the radio on ESP32-S3. Do not run
+// WiFi scans concurrently with BLE scans.
+
+#include <Arduino.h>
+#include <Arduino_GFX_Library.h>
+#include <BLEDevice.h>
+#include <BLEScan.h>
+#include "touch.h"
+#include "trackball.h"
+#include "keyboard.h"
+#include "theme.h"
+
+extern Arduino_GFX* gfx;
+
+#define MAX_BLE  48
+#define ROW_H    16
+
+struct BleDev {
+    char mac[20];
+    char name[32];
+    int  rssi;
+    bool connectable;
+};
+
+static BleDev devs[MAX_BLE];
+static int    dev_count = 0;
+static int    cursor    = 0;
+static int    scroll    = 0;
+static int    vis_rows  = (240 - 24 - 25) / ROW_H;
+
+static void draw_header(const char* status) {
+    gfx->fillRect(0, 0, 320, 24, C_DARK);
+    gfx->drawFastHLine(0, 24, 320, C_CYAN);
+    gfx->setCursor(10, 7);
+    gfx->setTextColor(C_CYAN);
+    gfx->setTextSize(1);
+    gfx->print(status);
+}
+
+static void draw_footer() {
+    gfx->fillRect(0, 215, 320, 25, C_DARK);
+    gfx->setCursor(10, 222);
+    gfx->setTextColor(C_GREEN);
+    gfx->printf("[S] Scan  [Q] Quit  Devices: %d", dev_count);
+}
+
+static uint16_t rssi_color(int rssi) {
+    if (rssi > -55) return C_GREEN;
+    if (rssi > -70) return C_YELLOW;
+    if (rssi > -85) return C_ORANGE;
+    return C_RED;
+}
+
+static void draw_list() {
+    gfx->fillRect(0, 25, 320, 190, C_BLACK);
+    for (int i = 0; i < vis_rows && scroll + i < dev_count; i++) {
+        int idx = scroll + i;
+        int y   = 25 + i * ROW_H;
+        bool sel = (idx == cursor);
+        if (sel) gfx->fillRect(0, y, 320, ROW_H, C_DARK);
+
+        // RSSI bar (3px wide, scales 0-40px for -100 to -40 dBm)
+        int bar = max(0, min(40, (devs[idx].rssi + 100) * 40 / 60));
+        gfx->fillRect(0, y + 4, bar, 8, rssi_color(devs[idx].rssi));
+
+        gfx->setCursor(45, y + 3);
+        gfx->setTextColor(sel ? C_CYAN : C_WHITE);
+        char name[18];
+        strncpy(name, devs[idx].name[0] ? devs[idx].name : "(unnamed)", 17);
+        name[17] = 0;
+        gfx->print(name);
+
+        gfx->setCursor(230, y + 3);
+        gfx->setTextColor(rssi_color(devs[idx].rssi));
+        gfx->printf("%d", devs[idx].rssi);
+
+        if (devs[idx].connectable) {
+            gfx->setCursor(275, y + 3);
+            gfx->setTextColor(C_GREEN);
+            gfx->print("C");
+        }
+    }
+    if (dev_count == 0) {
+        gfx->setTextColor(C_GREY);
+        gfx->setCursor(10, 80);
+        gfx->print("No devices found. Press [S] to scan.");
+    }
+}
+
+static int rssi_cmp(const void* a, const void* b) {
+    return ((BleDev*)b)->rssi - ((BleDev*)a)->rssi;
+}
+
+static void do_scan() {
+    draw_header("BLE SCANNER | SCANNING 4s...");
+
+    BLEDevice::init("");
+    BLEScan* scan = BLEDevice::getScan();
+    scan->setActiveScan(true);
+    scan->setInterval(80);
+    scan->setWindow(79);
+    BLEScanResults* results = scan->start(4, false);
+
+    for (int i = 0; i < results->getCount() && dev_count < MAX_BLE; i++) {
+        BLEAdvertisedDevice d = results->getDevice(i);
+        const char* mac = d.getAddress().toString().c_str();
+
+        bool found = false;
+        for (int j = 0; j < dev_count; j++) {
+            if (strcmp(devs[j].mac, mac) == 0) {
+                devs[j].rssi = d.getRSSI();
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            strncpy(devs[dev_count].mac, mac, 19);
+            strncpy(devs[dev_count].name,
+                    d.haveName() ? d.getName().c_str() : "", 31);
+            devs[dev_count].rssi = d.getRSSI();
+            devs[dev_count].connectable = d.isConnectable();
+            dev_count++;
+        }
+    }
+    scan->clearResults();
+    qsort(devs, dev_count, sizeof(BleDev), rssi_cmp);
+
+    draw_header("BLE SCANNER | TAP HEADER TO EXIT");
+    draw_list();
+    draw_footer();
+}
+
+void run_my_ble_scanner() {
+    dev_count = 0;
+    cursor    = 0;
+    scroll    = 0;
+
+    gfx->fillScreen(C_BLACK);
+    draw_header("BLE SCANNER | TAP HEADER TO EXIT");
+    draw_footer();
+    draw_list();
+
+    while (true) {
+        int16_t tx, ty;
+        if (get_touch(&tx, &ty) && ty < 40) {
+            while (get_touch(&tx, &ty)) { delay(10); yield(); }
+            return;
+        }
+
+        char k = get_keypress();
+        if (k == 'q' || k == 'Q') return;
+        if (k == 's' || k == 'S') { do_scan(); continue; }
+
+        TrackballState tb = update_trackball();
+        if (tb.y == -1 && cursor > 0) {
+            cursor--;
+            if (cursor < scroll) scroll = cursor;
+            draw_list();
+        }
+        if (tb.y ==  1 && cursor < dev_count - 1) {
+            cursor++;
+            if (cursor >= scroll + vis_rows) scroll = cursor - vis_rows + 1;
+            draw_list();
+        }
+
+        delay(30);
+        yield();
+    }
+}
+`
+  },
+
+  // ─────────────────────────────────────────────
+  builtin_probe_intel: {
+    name: "CYBER: RF Intel (Scan + Promiscuous)",
+    desc: "User-selectable: active WiFi scan (standalone) or 802.11 monitor mode (edge node)",
+    type: "builtin",
+    funcName: "run_probe_intel",
+    code: `// Pisces Moon OS — RF Intel (Probe Intelligence)
+// Copyright (C) 2026 Your Name
+// SPDX-License-Identifier: AGPL-3.0-or-later
+//
+// fluidfortune.com
+//
+// ╔══════════════════════════════════════════════════════╗
+//  TWO MODES, USER SELECTS ON LAUNCH:
+//
+//  SCAN MODE (standalone)
+//    Active WiFi scans every ~8s. Lists nearby networks
+//    by SSID, RSSI, encryption. GPS-tagged CSV log to SD.
+//    No host required. Use when T-Deck is a solo field unit.
+//
+//  PROMISCUOUS MODE (edge node)
+//    Passive 802.11 monitor. Captures all management frames:
+//    beacons, probe-req, probe-resp, deauth, auth, etc.
+//    Displays live frame-type counters on screen.
+//    If Bridge is also running → frames stream as JSON to host.
+//    If Bridge is not running → local stats display only.
+//    Use when T-Deck is feeding a laptop or dashboard.
+//
+//  [M] key switches between modes mid-session.
+//  Promiscuous mode hands off to wardrive Ghost Engine via
+//  wardrive_set_mode(WARDRIVE_MODE_PROMISCUOUS).
+// ╔══════════════════════════════════════════════════════╝
+
+#include <Arduino.h>
+#include <Arduino_GFX_Library.h>
+#include <WiFi.h>
+#include <SdFat.h>
+#include <TinyGPSPlus.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include "touch.h"
+#include "trackball.h"
+#include "keyboard.h"
+#include "theme.h"
+#include "wardrive.h"
+#include "pm_promiscuous.h"
+
+extern Arduino_GFX* gfx;
+extern SdFat sd;
+extern TinyGPSPlus gps;
+extern SemaphoreHandle_t spi_mutex;
+
+#define MAX_NETS    48
+#define ROW_H       16
+#define HEADER_H    24
+#define FOOTER_H    25
+#define BODY_TOP    (HEADER_H + 2)
+#define BODY_BOT    (240 - FOOTER_H - 2)
+#define MAX_ROWS    ((BODY_BOT - BODY_TOP) / ROW_H)
+
+// ─────────────────────────────────────────────
+//  MODE SELECT SCREEN
+//  Trackball up/down selects, click or ENTER confirms.
+//  Direct touch on a box also selects immediately.
+// ─────────────────────────────────────────────
+typedef int pi_mode_t;  // 0=scan, 1=promisc, -1=exit
+
+static pi_mode_t mode_select_screen(int current) {
+    int sel = current;
+
+    gfx->fillScreen(C_BLACK);
+    gfx->fillRect(0, 0, 320, HEADER_H, C_DARK);
+    gfx->drawFastHLine(0, HEADER_H, 320, C_CYAN);
+    gfx->setCursor(10, 7);
+    gfx->setTextColor(C_CYAN);
+    gfx->setTextSize(1);
+    gfx->print("PROBE INTEL | SELECT MODE");
+
+    // Draw scan mode box
+    gfx->drawRect(20, 50, 280, 55, sel == 0 ? C_GREEN : C_GREY);
+    gfx->setCursor(34, 60);
+    gfx->setTextColor(sel == 0 ? C_GREEN : C_WHITE);
+    gfx->print(sel == 0 ? "> SCAN MODE" : "  SCAN MODE");
+    gfx->setCursor(34, 76);
+    gfx->setTextColor(C_GREY);
+    gfx->print("Active WiFi scans + GPS CSV log.");
+    gfx->setCursor(34, 88);
+    gfx->print("Standalone field use.");
+
+    // Draw promiscuous mode box
+    gfx->drawRect(20, 120, 280, 65, sel == 1 ? C_RED : C_GREY);
+    gfx->setCursor(34, 130);
+    gfx->setTextColor(sel == 1 ? C_RED : C_WHITE);
+    gfx->print(sel == 1 ? "> PROMISCUOUS MODE" : "  PROMISCUOUS MODE");
+    gfx->setCursor(34, 146);
+    gfx->setTextColor(C_GREY);
+    gfx->print("Passive 802.11 monitor mode.");
+    gfx->setCursor(34, 158);
+    gfx->print("Streams JSON to host via Bridge.");
+    gfx->setCursor(34, 170);
+    gfx->print("Edge node / sensor use.");
+
+    gfx->fillRect(0, 215, 320, 25, C_DARK);
+    gfx->setCursor(10, 222);
+    gfx->setTextColor(C_GREEN);
+    gfx->print("[TB] Select  [ENTER] Confirm  [Q] Exit");
+
+    while (true) {
+        int16_t tx, ty;
+        if (get_touch(&tx, &ty)) {
+            if (ty >= 50 && ty <= 105)  return 0;
+            if (ty >= 120 && ty <= 185) return 1;
+        }
+        char k = get_keypress();
+        if (k == 'q' || k == 'Q')           return -1;
+        if (k == '
+' || k == '')         return sel;
+
+        TrackballState tb = update_trackball();
+        if (tb.y == -1 && sel > 0) { sel = 0; return mode_select_screen(sel); }
+        if (tb.y ==  1 && sel < 1) { sel = 1; return mode_select_screen(sel); }
+        if (tb.clicked)             return sel;
+
+        delay(30);
+        yield();
+    }
+}
+
+// ─────────────────────────────────────────────
+//  SCAN MODE
+//  Active WiFi scan cycles, dedup table, RSSI-bar list,
+//  GPS-tagged CSV log to SD (SPI Bus Treaty compliant).
+// ─────────────────────────────────────────────
+struct NetEntry { char bssid[20]; char ssid[36]; int rssi; uint8_t ch; bool open; };
+static NetEntry nets[MAX_NETS];
+static int net_count = 0, net_cursor = 0, net_scroll = 0;
+
+static void scan_draw(bool scanning) {
+    gfx->fillRect(0, 0, 320, HEADER_H, C_DARK);
+    gfx->drawFastHLine(0, HEADER_H, 320, C_GREEN);
+    gfx->setCursor(10, 7);
+    gfx->setTextColor(C_GREEN);
+    gfx->setTextSize(1);
+    gfx->printf("SCAN MODE%s | TAP TO EXIT", scanning ? " [SCANNING]" : "");
+
+    gfx->fillRect(0, BODY_TOP, 320, BODY_BOT - BODY_TOP, C_BLACK);
+    for (int i = 0; i < MAX_ROWS && net_scroll + i < net_count; i++) {
+        int idx = net_scroll + i;
+        int y   = BODY_TOP + i * ROW_H;
+        bool sel = (idx == net_cursor);
+        if (sel) gfx->fillRect(0, y, 320, ROW_H, C_DARK);
+        int bar = max(0, min(28, (nets[idx].rssi + 100) * 28 / 60));
+        uint16_t bc = nets[idx].rssi > -60 ? C_GREEN : nets[idx].rssi > -75 ? C_YELLOW : C_RED;
+        gfx->fillRect(0, y+4, bar, 7, bc);
+        gfx->setCursor(32, y+3);
+        gfx->setTextColor(sel ? C_CYAN : (nets[idx].open ? C_YELLOW : C_WHITE));
+        char s[18]; strncpy(s, nets[idx].ssid[0] ? nets[idx].ssid : "(hidden)", 17); s[17]=0;
+        gfx->print(s);
+        gfx->setCursor(245, y+3); gfx->setTextColor(C_GREY);
+        gfx->printf("ch%d", nets[idx].ch);
+        gfx->setCursor(285, y+3); gfx->setTextColor(bc);
+        gfx->printf("%d", nets[idx].rssi);
+    }
+    if (net_count == 0) {
+        gfx->setTextColor(C_GREY); gfx->setCursor(10, BODY_TOP+20);
+        gfx->print("[S] to scan. [M] to switch mode.");
+    }
+
+    gfx->fillRect(0, 215, 320, 25, C_DARK);
+    gfx->setCursor(10, 222); gfx->setTextColor(C_GREEN);
+    gfx->printf("[S] Scan  [M] Mode  [Q] Exit | %d nets", net_count);
+}
+
+static void run_scan_mode() {
+    net_count = 0; net_cursor = 0; net_scroll = 0;
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+    scan_draw(false);
+
+    while (true) {
+        int16_t tx, ty;
+        if (get_touch(&tx, &ty) && ty < HEADER_H) {
+            while (get_touch(&tx, &ty)) { delay(10); yield(); }
+            return;
+        }
+        char k = get_keypress();
+        if (k == 'q' || k == 'Q' || k == 'm' || k == 'M') return;
+        if (k == 's' || k == 'S') {
+            scan_draw(true);
+            int n = WiFi.scanNetworks(false, true);
+            if (n < 0) n = 0;
+
+            // SD write under mutex — never hold mutex during the scan itself
+            if (spi_mutex && xSemaphoreTake(spi_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
+                FsFile f = sd.open("/probe_scan.csv", O_WRITE|O_CREAT|O_APPEND);
+                for (int i = 0; i < n && net_count < MAX_NETS; i++) {
+                    char mac[20], ssid[36];
+                    strncpy(mac,  WiFi.BSSIDstr(i).c_str(), 19);
+                    strncpy(ssid, WiFi.SSID(i).c_str(), 35);
+                    bool found = false;
+                    for (int j = 0; j < net_count; j++) {
+                        if (strcmp(nets[j].bssid, mac) == 0) {
+                            nets[j].rssi = WiFi.RSSI(i); found = true; break;
+                        }
+                    }
+                    if (!found) {
+                        strncpy(nets[net_count].bssid, mac, 19);
+                        strncpy(nets[net_count].ssid,  ssid, 35);
+                        nets[net_count].rssi = WiFi.RSSI(i);
+                        nets[net_count].ch   = WiFi.channel(i);
+                        nets[net_count].open = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN);
+                        net_count++;
+                    }
+                    if (f) {
+                        char line[128];
+                        snprintf(line, sizeof(line), "%s,%s,%d,%d,%s,%.6f,%.6f
+",
+                            mac, ssid, WiFi.RSSI(i), WiFi.channel(i),
+                            WiFi.encryptionType(i) == WIFI_AUTH_OPEN ? "OPEN" : "WPA",
+                            gps.location.isValid() ? gps.location.lat() : 0.0,
+                            gps.location.isValid() ? gps.location.lng() : 0.0);
+                        f.print(line);
+                    }
+                }
+                if (f) f.close();
+                xSemaphoreGive(spi_mutex);
+            }
+            WiFi.scanDelete();
+            scan_draw(false);
+        }
+
+        TrackballState tb = update_trackball();
+        if (tb.y == -1 && net_cursor > 0) { net_cursor--; if (net_cursor < net_scroll) net_scroll--; scan_draw(false); }
+        if (tb.y ==  1 && net_cursor < net_count - 1) { net_cursor++; if (net_cursor >= net_scroll + MAX_ROWS) net_scroll++; scan_draw(false); }
+
+        delay(30); yield();
+    }
+}
+
+// ─────────────────────────────────────────────
+//  PROMISCUOUS MODE
+//  Sets wardrive Ghost Engine to WARDRIVE_MODE_PROMISCUOUS.
+//  Ghost Engine runs pm_promiscuous on Core 0 — we just
+//  display the stats it accumulates.
+//  If Bridge is active (wardrive_bridge_streaming == true),
+//  the Ghost Engine is already emitting pkt JSON to Serial.
+//  If not, we show local stats only — same display, no stream.
+// ─────────────────────────────────────────────
+static void run_promiscuous_mode() {
+    wardrive_set_mode(WARDRIVE_MODE_PROMISCUOUS);
+    wardrive_active = true;
+
+    gfx->fillScreen(C_BLACK);
+    bool edge = wardrive_bridge_streaming;
+    gfx->fillRect(0, 0, 320, HEADER_H, C_DARK);
+    gfx->drawFastHLine(0, HEADER_H, 320, C_RED);
+    gfx->setCursor(10, 7); gfx->setTextColor(C_RED); gfx->setTextSize(1);
+    gfx->printf("PROMISC%s | TAP TO EXIT", edge ? " [EDGE]" : " [LOCAL]");
+
+    // Static labels
+    const char* labels[] = { "Beacon:", "Probe-Req:", "Deauth:", "Other:", "Dropped:", "FPS:" };
+    const uint16_t lc[]  = { C_GREEN,   C_CYAN,       C_RED,    C_GREY,  C_GREY,    C_WHITE };
+    int ys[] = { 34, 60, 86, 112, 138, 164 };
+    for (int i = 0; i < 6; i++) {
+        gfx->setCursor(10, ys[i]); gfx->setTextColor(lc[i]); gfx->setTextSize(1);
+        gfx->print(labels[i]);
+    }
+
+    gfx->fillRect(0, 215, 320, 25, C_DARK);
+    gfx->setCursor(10, 222); gfx->setTextColor(edge ? C_RED : C_GREY); gfx->setTextSize(1);
+    gfx->printf("[M] Mode  [Q] Exit | %s", edge ? "Streaming to host" : "Local display only");
+
+    uint32_t last_ms = 0;
+    while (true) {
+        int16_t tx, ty;
+        if (get_touch(&tx, &ty) && ty < HEADER_H) {
+            while (get_touch(&tx, &ty)) { delay(10); yield(); }
+            break;
+        }
+        char k = get_keypress();
+        if (k == 'q' || k == 'Q' || k == 'm' || k == 'M') break;
+
+        if (millis() - last_ms >= 500) {
+            pm_stats_t s;
+            pm_promiscuous_get_stats(&s);
+            uint32_t vals[] = { s.beacon_count, s.probe_req_count,
+                                s.deauth_count, s.other_count, s.dropped, s.frames_per_sec };
+            for (int i = 0; i < 6; i++) {
+                gfx->fillRect(120, ys[i], 100, 18, C_BLACK);
+                gfx->setCursor(120, ys[i]); gfx->setTextColor(lc[i]);
+                gfx->printf("%lu", vals[i]);
+            }
+            // Channel indicator
+            gfx->fillRect(0, 188, 320, 20, C_BLACK);
+            gfx->setCursor(10, 190); gfx->setTextColor(C_GREY);
+            gfx->printf("Ch: %d  |  Total: %lu", pm_promiscuous_channel(), s.captured);
+            if (s.deauth_count > 0) {
+                gfx->setCursor(200, ys[2]); gfx->setTextColor(C_RED);
+                gfx->print("<< ALERT");
+            }
+            last_ms = millis();
+        }
+        delay(50); yield();
+    }
+    wardrive_set_mode(WARDRIVE_MODE_SCAN);
+}
+
+// ─────────────────────────────────────────────
+//  ENTRY POINT
+// ─────────────────────────────────────────────
+void run_probe_intel() {
+    int mode = 0;
+    while (true) {
+        mode = mode_select_screen(mode);
+        if (mode == -1) return;   // user pressed Q
+        if (mode == 0) run_scan_mode();
+        else           run_promiscuous_mode();
+        // Loop back to mode select — [M] from either mode brings user here
+    }
+}
+`
+  }
 
 };

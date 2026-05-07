@@ -692,8 +692,64 @@ class PiscesEmulator {
     body = body.replace(/DpadState\s+(\w+)\s*=\s*get_dpad\s*\(\)/g, "let $1 = emu.get_dpad()");
     body = body.replace(/\bget_dpad\s*\(\)/g, "emu.get_dpad()");
 
+    // ─────────────────────────────────────────────
+    // ELF context — ctx->field becomes stub values so the
+    // ELF template preview can run in the browser.
+    // The real ElfContext is a C struct passed as void* — not
+    // accessible in JS. We emulate just enough to run the demo.
+    // ─────────────────────────────────────────────
+    // ctx->gfx is already aliased in the template preamble
+    body = body.replace(/\bctx->gfx\b/g, "gfx");
+    // api_minor — always report 1 in preview (we support v1.1)
+    body = body.replace(/\bctx->api_minor\b/g, "1");
+    // sd helper function pointers — stub them as null so if (handle >= 0) fails safely
+    body = body.replace(/\bctx->sd_open_read\s*\(/g, "(() => -1)(");
+    body = body.replace(/\bctx->sd_open_write\s*\(/g, "(() => -1)(");
+    body = body.replace(/\bctx->sd_read\s*\(/g, "(() => -1)(");
+    body = body.replace(/\bctx->sd_write\s*\(/g, "(() => -1)(");
+    body = body.replace(/\bctx->sd_close\s*\(/g, "(() => 0)(");
+    body = body.replace(/\bctx->sd_exists\s*\(/g, "(() => false)(");
+    body = body.replace(/\bctx->sd_mkdir\s*\(/g, "(() => false)(");
+    body = body.replace(/\bctx->sd_remove\s*\(/g, "(() => false)(");
+    body = body.replace(/\bctx->sd_size\s*\(/g, "(() => 0)(");
+    // ctx->sd_open_read != nullptr → true (exists in v1.1 context)
+    body = body.replace(/\bctx->sd_open_read\s*!=\s*nullptr/g, "true");
+    // Any remaining ctx-> field access → 0 (safe default)
+    body = body.replace(/\bctx->(\w+)\b/g, "0 /*ctx.$1*/");
+    // nullptr → null
+    body = body.replace(/\bnullptr\b/g, "null");
+
     // Math helpers commonly used in apps
     body = body.replace(/\bstrncpy\s*\([^;]+\)\s*;/g, ""); // strip strncpy in preview
+    body = body.replace(/\bstrcmp\s*\(\s*([^,]+),\s*([^)]+)\)/g, "($1 === $2 ? 0 : 1)");
+    body = body.replace(/\bstrlen\s*\(\s*(\w+)\s*\)/g, "($1.length)");
+    body = body.replace(/\bstrcpy\s*\([^;]+\)\s*;/g,  "");
+    body = body.replace(/\bmemcpy\s*\([^;]+\)\s*;/g,  "");
+    body = body.replace(/\bqsort\s*\([^;]+\)\s*;/g,   "");  // no-op in preview
+
+    // BLE API stubs — BLE hardware isn't accessible in browser preview
+    body = body.replace(/\bBLEDevice::init\s*\([^)]*\)\s*;/g, "");
+    body = body.replace(/\bBLEDevice::getScan\s*\(\)/g, "null");
+    body = body.replace(/\b\w+->start\s*\(\d+,\s*(?:false|true)\)/g, "null");
+    body = body.replace(/\b\w+->setActiveScan\s*\([^)]*\)\s*;/g, "");
+    body = body.replace(/\b\w+->setInterval\s*\([^)]*\)\s*;/g, "");
+    body = body.replace(/\b\w+->setWindow\s*\([^)]*\)\s*;/g, "");
+    body = body.replace(/\b\w+->clearResults\s*\(\)\s*;/g, "");
+    body = body.replace(/\b\w+->getCount\s*\(\)/g, "0");
+    body = body.replace(/\bBLEScan\s*\*/g, "let ");
+    body = body.replace(/\bBLEScanResults\s*\*/g, "let ");
+
+    // WiFi promiscuous / esp_wifi — strip entirely for preview
+    body = body.replace(/\besp_wifi_set_promiscuous\s*\([^)]*\)\s*;/g, "");
+    body = body.replace(/\besp_wifi_set_promiscuous_rx_cb\s*\([^)]*\)\s*;/g, "");
+    body = body.replace(/\besp_wifi_set_channel\s*\([^)]*\)\s*;/g, "");
+
+    // FreeRTOS mutex extras (ISR variants)
+    body = body.replace(/\bxSemaphoreTakeFromISR\s*\([^)]+\)/g, "true");
+    body = body.replace(/\bxSemaphoreGiveFromISR\s*\([^)]+\)\s*;/g, "");
+    body = body.replace(/\bxSemaphoreCreateMutex\s*\(\s*\)/g, "{}");
+    body = body.replace(/\bvSemaphoreDelete\s*\([^)]+\)\s*;/g, "");
+
     body = body.replace(/\bf\.printf\s*\(/g, "/* f.printf */ (() => 0)(");  // SD writes no-op
     body = body.replace(/\bf\.close\s*\(\)\s*;/g, "");
     body = body.replace(/FsFile\s+f\s*=\s*sd\.open\s*\([^;]+\)\s*;/g, "let f = null;");

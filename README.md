@@ -18,7 +18,7 @@ Browser-based development for Pisces Moon OS.
 - **Live preview** — code runs in a 320×240 emulator window in your browser
 - **Cloud build** — backend runs PlatformIO, returns a real `.bin`
 - **Web Serial flash** — flashes directly to your T-Deck without leaving Chrome
-- **13 templates** covering every category (TOOLS, GAMES, COMMS, CYBER, INTEL, MEDIA, SYSTEM, ELF)
+- **15 templates** covering every category (TOOLS, GAMES, COMMS, CYBER, INTEL, MEDIA, SYSTEM, ELF)
 - **Full API reference** searchable in the sidebar
 - **Export** — generates clean source files for traditional development
 
@@ -177,21 +177,23 @@ The preview is a development aid. The real test is running on the device.
 
 ## Templates Included
 
-| Template | Category | What it shows |
-|---|---|---|
-| Basic App | TOOLS | Header, exit, trackball, keyboard — the universal pattern |
-| Menu App | TOOLS | Vertical selection menu |
-| Simple Game | GAMES | Game loop with movable cursor, fast trackball |
-| NFC Reader | CYBER | Polls NFC tags, shows UID + NDEF text |
-| **Wardriver** | **CYBER** | WiFi scan with GPS-tagged CSV logging, full SPI Bus Treaty |
-| Mesh Messenger | COMMS | LoRa mesh chat with broadcast send |
-| GPS Position | COMMS | Live lat/lng/altitude/satellites display |
-| **D-pad App** | **(any)** | Same source compiles for KodeDot and T-Deck |
-| NoSQL Database | INTEL | Document store with list/detail/new |
-| AI / Gemini | INTEL | Prompt → AI response, graceful no-key fallback |
-| Audio Player | MEDIA | SD file scan, play/stop UI |
-| System Info | SYSTEM | Free heap/PSRAM, WiFi state, uptime |
-| ELF Module | (any) | Standalone .elf with elf_main entry point |
+| Template | Category | Hardware | What it shows |
+|---|---|---|---|
+| Basic App | TOOLS | Both | Header, exit, trackball, keyboard — the universal pattern |
+| Menu App | TOOLS | Both | Vertical selection menu |
+| Simple Game | GAMES | Both | Game loop with movable cursor, fast trackball |
+| NFC Reader | CYBER | Both | Polls NFC tags, shows UID + NDEF text |
+| **Wardriver** | **CYBER** | **Both** | WiFi+GPS scan, CSV logging, full SPI Bus Treaty |
+| **BLE Scanner** | **CYBER** | **Both** | Passive BLE advertiser discovery, RSSI-sorted list |
+| **Probe Intel** | **CYBER** | **Both** | 802.11 probe request sniffer, device presence mapping |
+| Mesh Messenger | COMMS | Both | LoRa mesh chat with broadcast send |
+| GPS Position | COMMS | Both | Live lat/lng/altitude/satellites display |
+| **KodeDot BLE** | **CYBER** | **Both** | Dual-hardware BLE scanner: 480×480 + 320×240 layout, D-pad nav |
+| NoSQL Database | INTEL | Both | Document store with list/detail/new |
+| AI / Gemini | INTEL | Both | Prompt → AI response, graceful no-key fallback |
+| Audio Player | MEDIA | Both | SD file scan, play/stop UI |
+| System Info | SYSTEM | Both | Free heap/PSRAM, WiFi state, uptime |
+| ELF Module | (any) | Both | Standalone .elf with elf_main entry point |
 
 ---
 
@@ -203,6 +205,71 @@ The preview is a development aid. The real test is running on the device.
 | KodeDot | Theoretical | D-pad + Buttons + Touch |
 
 Use templates with `update_trackball()` for T-Deck-specific apps. Use `get_dpad()` for portable apps that work on both. Lety's preview emulates trackball behavior; KodeDot's native d-pad maps to the same `{x, y, clicked}` structure on real hardware.
+
+---
+
+
+---
+
+## Key Libraries — What They Do
+
+Pisces Moon pulls in these libraries via PlatformIO. When you see `#include` at the top of a template, here's what you're getting:
+
+| Library | Header | What it provides |
+|---|---|---|
+| Arduino_GFX | `Arduino_GFX_Library.h` | Display driver — `gfx->fillScreen()`, `gfx->print()`, all drawing primitives |
+| SdFat | `SdFat.h` | SD card filesystem — fast FAT32/exFAT, FreeRTOS-safe with mutex |
+| TinyGPSPlus | `TinyGPSPlus.h` | NMEA GPS parser — `gps.location.lat()`, `gps.satellites.value()` etc |
+| ESP32 BLE | `BLEDevice.h`, `BLEScan.h` | Bluetooth LE stack — scanning, GATT client, advertising |
+| RadioLib | Used internally | LoRa SX1262 driver — LoRa TX/RX, frequency, spreading factor |
+| ArduinoJson | Used internally | JSON serialization — ELF manifests, NoSQL documents |
+| Audio | `Audio.h` | I2S audio streaming — MP3/WAV from SD to DAC |
+| FreeRTOS | `freertos/semphr.h` | RTOS primitives — mutexes, tasks, queues. Comes with ESP32 Arduino |
+| esp_wifi | `esp_wifi.h` | Low-level WiFi — promiscuous mode for packet sniffing |
+
+You don't install these manually. PlatformIO reads `lib_deps` in `platformio.ini` and fetches them automatically the first time you build.
+
+### The ones Pisces Moon adds itself
+
+These headers are part of Pisces Moon, not external libraries:
+
+| Header | What it provides |
+|---|---|
+| `theme.h` | Color constants: `C_GREEN`, `C_RED`, `C_CYAN`, `C_DARK` etc |
+| `touch.h` | `get_touch(&tx, &ty)` — GT911 capacitive touchscreen |
+| `trackball.h` | `update_trackball()` → `TrackballState {x, y, clicked}` |
+| `dpad.h` | `get_dpad()` → `DpadState {x, y, clicked}` — unified T-Deck+KodeDot input |
+| `keyboard.h` | `get_keypress()` → char — T-Deck QWERTY keyboard |
+| `gemini_client.h` | `ask_gemini(prompt)`, `gemini_has_key()` — Gemini AI API |
+| `nosql_store.h` | `nosql_save_entry()`, `nosql_get_entry()` — SD-backed document store |
+| `elf_loader.h` | ELF context struct, `ctx->sd_open_read()` helpers for ELF modules |
+| `text_buffer.h` | PSRAM-backed scrollback buffer for terminal-style apps |
+
+---
+
+## KodeDot Portability Notes
+
+KodeDot ships with a 480×480 AMOLED display versus the T-Deck's 320×240. Apps that hardcode pixel positions won't look right on one of the two devices.
+
+**The right approach:**
+
+```cpp
+// At the top of your app, or in a shared header:
+// These resolve at compile time based on the target board.
+// T-Deck:  SCREEN_W=320, SCREEN_H=240
+// KodeDot: SCREEN_W=480, SCREEN_H=480
+
+int center_x = SCREEN_W / 2;
+int center_y = SCREEN_H / 2;
+int row_max  = (SCREEN_H - 49) / 18;   // header=24 + footer=25
+
+// Adapt text density to available space:
+int max_name_chars = (SCREEN_W > 400) ? 30 : 18;
+```
+
+**Input:** `get_dpad()` returns `DpadState {x, y, clicked}` on both devices. On T-Deck it maps trackball motion. On KodeDot it reads the native d-pad. Apps that use `get_dpad()` instead of `update_trackball()` compile and behave correctly on both without any `#ifdef`.
+
+**The KodeDot BLE Scanner template** demonstrates both patterns end-to-end.
 
 ---
 
